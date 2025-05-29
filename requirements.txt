@@ -1,0 +1,16 @@
+mlflow==2.10.0
+scikit-learn==1.0.2
+pandas==1.3.3
+numpy==1.21.0
+lightgbm
+boto3==1.24.3
+psycopg2-binary==2.9.7
+requests==2.31.0
+joblib==1.1.0
+matplotlib
+seaborn
+plotly
+httpx
+aiohttp
+python-dateutil
+pydantic
