@@ -3,6 +3,14 @@ from airflow.providers.postgres.operators.postgres import PostgresOperator
 from datetime import datetime
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+import mlflow
+import os
+
+
+MLFLOW_TRACKING_URI = "http://10.43.101.175:30500"
+MLFLOW_S3_ENDPOINT_URL = "http://10.43.101.175:30382"
+AWS_ACCESS_KEY_ID = "adminuser"
+AWS_SECRET_ACCESS_KEY = "securepassword123"
 
 default_args = {
     'owner': 'airflow',
@@ -21,10 +29,23 @@ dag = DAG(
     description='DAG para borrar esquemas rawdata y cleandata antes de otros DAGs'
 )
 
+def set_mlflow_tracking(**kwargs):
+    """Configurar tracking de MLflow"""
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    
+    
+    os.environ['MLFLOW_TRACKING_URI'] = MLFLOW_TRACKING_URI
+    os.environ['MLFLOW_S3_ENDPOINT_URL'] = MLFLOW_S3_ENDPOINT_URL
+    os.environ['AWS_ACCESS_KEY_ID'] = AWS_ACCESS_KEY_ID
+    os.environ['AWS_SECRET_ACCESS_KEY'] = AWS_SECRET_ACCESS_KEY
+
+    print("✅ Tracking de MLflow configurado exitosamente")
+
 drop_schemas_sql = """
 DROP SCHEMA IF EXISTS rawdata CASCADE;  
 DROP SCHEMA IF EXISTS cleandata CASCADE;
 """
+
 def check_schemas(**kwargs):
     hook = PostgresHook(postgres_conn_id='postgres_default')
     engine = hook.get_sqlalchemy_engine()
@@ -33,12 +54,30 @@ def check_schemas(**kwargs):
         schemas = [row[0] for row in result]
         print("Schemas disponibles:", schemas)
 
+def log_cleanup_mlflow(**kwargs):
+    """Log de limpieza en MLflow"""
+    try:
+        mlflow.set_experiment('house_price_pipeline')
+        with mlflow.start_run(run_name="schema_cleanup"):
+            mlflow.log_param("operation", "schema_cleanup")
+            mlflow.log_param("schemas_dropped", "rawdata, cleandata")
+            mlflow.log_metric("cleanup_timestamp", datetime.now().timestamp())
+            print("✅ Cleanup registrado en MLflow")
+    except Exception as e:
+        print(f"❌ Error al registrar en MLflow: {e}")
+
+
+set_mlflow_tracking_task = PythonOperator(
+    task_id='set_mlflow_tracking',
+    python_callable=set_mlflow_tracking,
+    dag=dag
+)
+
 check_schemas_task = PythonOperator(
     task_id='check_schemas',
     python_callable=check_schemas,
     dag=dag
 )
-
 
 drop_schemas_task = PostgresOperator(
     task_id='drop_schemas',
@@ -46,4 +85,12 @@ drop_schemas_task = PostgresOperator(
     sql=drop_schemas_sql,
     dag=dag
 )
-check_schemas_task >> drop_schemas_task
+
+log_cleanup_task = PythonOperator(
+    task_id='log_cleanup_mlflow',
+    python_callable=log_cleanup_mlflow,
+    dag=dag
+)
+
+
+set_mlflow_tracking_task >> check_schemas_task >> drop_schemas_task >> log_cleanup_task
