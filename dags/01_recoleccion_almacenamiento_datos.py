@@ -22,14 +22,14 @@ dag = DAG(
     'diabetes_data_processing',
     default_args=default_args,
     description='Descargar, procesar y almacenar datos de diabetes',
-    schedule_interval=timedelta(days=1,hours=1), # un dia y una hora
+    schedule_interval=timedelta(days=1, hours=1), # un dia y una hora
     start_date=datetime(2025, 4, 1),
     catchup=False,
     max_active_runs=1, 
     tags=['diabetes', 'procesamiento-datos'],
 )
 
-TEMP_DIR = '/opt/airflow/temp'
+TEMP_DIR = '/tmp/airflow_temp'
 
 BATCH_SIZE = 15000
 
