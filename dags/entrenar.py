@@ -38,6 +38,14 @@ clean_schema = 'cleandata'
 clean_table = 'processed_houses'
 previous_data_path = '/tmp/previous_training_data.joblib'
 
+def log_to_db(status, message, rmse=None):
+    hook = PostgresHook(postgres_conn_id='postgres_default')
+    sql = """
+        INSERT INTO trainlogs.logs (status, message, rmse)
+        VALUES (%s, %s, %s)
+    """
+    hook.run(sql, parameters=(status, message, rmse))
+
 def check_data_count(**kwargs):
     hook = PostgresHook(postgres_conn_id='postgres_default')
     sql = f"SELECT COUNT(*) FROM {clean_schema}.{clean_table};"
@@ -47,25 +55,18 @@ def check_data_count(**kwargs):
     if count > 20000:
         return "detect_data_drift_task"
     else:
+        log_to_db("skip", "No se entrenó el modelo: menos de 20,000 registros.")
         return "skip_training_task"
 
 def detect_data_drift(**kwargs):
-    import os
-    import joblib
-    from evidently import ColumnMapping
-    from evidently.report import Report
-    from evidently.metric_preset import DataDriftPreset, TargetDriftPreset
-
     hook = PostgresHook(postgres_conn_id='postgres_default')
     engine = hook.get_sqlalchemy_engine()
     query = f"SELECT * FROM {clean_schema}.{clean_table};"
     df_new = pd.read_sql(query, con=engine)
 
-    # Mantener solo columnas relevantes
     relevant_cols = ['price', 'bed', 'bath', 'acre_lot']
     df_new = df_new[relevant_cols]
 
-    # Convertir object a category
     categorical_cols = df_new.select_dtypes(include='object').columns.tolist()
     df_new[categorical_cols] = df_new[categorical_cols].astype('category')
 
@@ -79,7 +80,7 @@ def detect_data_drift(**kwargs):
 
     if not os.path.exists(previous_data_path):
         joblib.dump(df_new, previous_data_path)
-        print("No hay datos anteriores, se asume no drift.")
+        log_to_db("train", "No se detectó drift (primer entrenamiento).")
         return "train_model_task"
 
     df_old = joblib.load(previous_data_path)
@@ -92,13 +93,12 @@ def detect_data_drift(**kwargs):
     target_drift_score = result['metrics'][1]['result'].get('drift_score', 0.0)
 
     if drift_flag or target_drift_score > 0.05:
-        print(f"Drift detectado: dataset_drift={drift_flag}, target_drift_score={target_drift_score}")
+        log_to_db("skip", f"Drift detectado: dataset_drift={drift_flag}, target_drift_score={target_drift_score:.4f}")
         return "skip_training_task"
     else:
         joblib.dump(df_new, previous_data_path)
-        print("No hay drift detectado, se continúa al entrenamiento.")
+        log_to_db("train", "No se detectó drift, se procede a entrenar el modelo.")
         return "train_model_task"
-
 
 def train_model(**kwargs):
     hook = PostgresHook(postgres_conn_id='postgres_default')
@@ -107,28 +107,19 @@ def train_model(**kwargs):
     df = pd.read_sql(query, con=engine)
 
     y = df['price']
-    X = df.drop(columns=['id', 'price', 'prev_sold_date'])
+    X = df.drop(columns=['id', 'price', 'prev_sold_date'], errors='ignore')
     for col in X.select_dtypes(include='object').columns:
         X[col] = X[col].astype('category')
 
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Guardar subconjunto para comparación futura
     df_train = X_train.copy()
     df_train['price'] = y_train
     joblib.dump(df_train, previous_data_path)
     print(f"Datos de entrenamiento guardados en {previous_data_path}")
 
-    model = LGBMRegressor(
-        objective='regression',
-        n_estimators=50,
-        random_state=42
-    )
-
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_val, y_val)]
-    )
+    model = LGBMRegressor(objective='regression', n_estimators=50, random_state=42)
+    model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
 
     y_pred = model.predict(X_val, num_iteration=model.best_iteration_)
     rmse = mean_squared_error(y_val, y_pred, squared=False)
@@ -136,6 +127,8 @@ def train_model(**kwargs):
 
     model.booster_.save_model('/tmp/lgbm_model.txt')
     print("Modelo guardado en /tmp/lgbm_model.txt")
+
+    log_to_db("train", "Modelo entrenado exitosamente.", rmse=rmse)
 
 with dag:
 
