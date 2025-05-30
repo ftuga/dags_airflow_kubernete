@@ -10,6 +10,8 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
+import mlflow
+import mlflow.lightgbm
 
 # Evidently API nueva
 from evidently import ColumnMapping
@@ -119,16 +121,24 @@ def train_model(**kwargs):
     print(f"Datos de entrenamiento guardados en {previous_data_path}")
 
     model = LGBMRegressor(objective='regression', n_estimators=50, random_state=42)
-    model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
 
-    y_pred = model.predict(X_val, num_iteration=model.best_iteration_)
-    rmse = mean_squared_error(y_val, y_pred, squared=False)
-    print(f"RMSE validación: {rmse:.4f}")
+    mlflow.set_tracking_uri("http://mlflow.mlops-project.svc.cluster.local:5000")
+    mlflow.set_experiment("lightgbm_housing")
 
-    model.booster_.save_model('/tmp/lgbm_model.txt')
-    print("Modelo guardado en /tmp/lgbm_model.txt")
+    with mlflow.start_run():
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
 
-    log_to_db("train", "Modelo entrenado exitosamente.", rmse=rmse)
+        y_pred = model.predict(X_val, num_iteration=model.best_iteration_)
+        rmse = mean_squared_error(y_val, y_pred, squared=False)
+        print(f"RMSE validación: {rmse:.4f}")
+
+        mlflow.log_param("n_estimators", 50)
+        mlflow.log_metric("rmse", rmse)
+        mlflow.lightgbm.log_model(model, artifact_path="model")
+
+        log_to_db("train", "Modelo entrenado y registrado en MLflow.", rmse=rmse)
+
+    print("Modelo guardado y logueado en MLflow.")
 
 with dag:
 
