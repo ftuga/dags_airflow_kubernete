@@ -1,8 +1,6 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.postgres.operators.postgres import PostgresOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-from airflow.operators.python import BranchPythonOperator
 from airflow.models import Variable
 from datetime import datetime, timedelta
 import pandas as pd
@@ -42,34 +40,34 @@ table_name = 'houses'
 def set_mlflow_tracking(**kwargs):
     """Configurar tracking de MLflow"""
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    
-    
     os.environ['MLFLOW_TRACKING_URI'] = MLFLOW_TRACKING_URI
     os.environ['MLFLOW_S3_ENDPOINT_URL'] = MLFLOW_S3_ENDPOINT_URL
     os.environ['AWS_ACCESS_KEY_ID'] = AWS_ACCESS_KEY_ID
     os.environ['AWS_SECRET_ACCESS_KEY'] = AWS_SECRET_ACCESS_KEY
-
     print("✅ Tracking de MLflow configurado exitosamente")
 
-create_schema_and_table_sql = f"""
-CREATE SCHEMA IF NOT EXISTS {database_name};
+def create_schema_and_table(**kwargs):
+    pg_hook = PostgresHook(postgres_conn_id='postgres_default')
+    pg_hook.run(f"""
+        CREATE SCHEMA IF NOT EXISTS {database_name};
 
-CREATE TABLE IF NOT EXISTS {database_name}.{table_name} (
-    id SERIAL PRIMARY KEY,
-    brokered_by VARCHAR(100) NOT NULL,
-    status VARCHAR(50) NOT NULL,
-    price NUMERIC(12,2) NOT NULL,
-    bed INT NOT NULL,
-    bath NUMERIC(8,3) NOT NULL,
-    acre_lot NUMERIC(12,3) NOT NULL,
-    street VARCHAR(150) NOT NULL,
-    city VARCHAR(100) NOT NULL,
-    state VARCHAR(50) NOT NULL,
-    zip_code VARCHAR(20) NOT NULL,
-    house_size INT NOT NULL,
-    prev_sold_date DATE
-);
-"""
+        CREATE TABLE IF NOT EXISTS {database_name}.{table_name} (
+            id SERIAL PRIMARY KEY,
+            brokered_by VARCHAR(100) NOT NULL,
+            status VARCHAR(50) NOT NULL,
+            price NUMERIC(12,2) NOT NULL,
+            bed INT NOT NULL,
+            bath NUMERIC(8,3) NOT NULL,
+            acre_lot NUMERIC(12,3) NOT NULL,
+            street VARCHAR(150) NOT NULL,
+            city VARCHAR(100) NOT NULL,
+            state VARCHAR(50) NOT NULL,
+            zip_code VARCHAR(20) NOT NULL,
+            house_size INT NOT NULL,
+            prev_sold_date DATE
+        );
+    """)
+    print("✅ Schema y tabla creados")
 
 def server_response(group_number=1, max_retries=3, wait_seconds=5):
     server_url = 'http://10.43.101.108:80/data'
@@ -144,12 +142,8 @@ def load_data(**kwargs):
             mlflow.log_metric("unique_cities", df["city"].nunique())
 
             
-            postgres_hook = PostgresHook(postgres_conn_id='postgres_default')
-            engine = postgres_hook.get_sqlalchemy_engine()
-
-            
-            create_schema_sql = f"CREATE SCHEMA IF NOT EXISTS {database_name};"
-            postgres_hook.run(create_schema_sql)
+            pg_hook = PostgresHook(postgres_conn_id='postgres_default')
+            engine = pg_hook.get_sqlalchemy_engine()
 
             
             df.to_sql(
@@ -164,7 +158,7 @@ def load_data(**kwargs):
 
             
             count_query = f"SELECT COUNT(*) FROM {database_name}.{table_name}"
-            records_count = postgres_hook.get_records(count_query)[0][0]
+            records_count = pg_hook.get_records(count_query)[0][0]
             
             mlflow.log_metric("total_records_in_db", records_count)
             mlflow.log_metric("records_loaded_this_run", len(df))
@@ -182,15 +176,6 @@ def load_data(**kwargs):
 
     time.sleep(2)
 
-def decide_next_task(**kwargs):
-    iter_count = Variable.get("dag_iter_count", default_var=1)
-    iter_count = int(iter_count)
-    time.sleep(5)
-    if iter_count > 10:
-        return "stop_task"
-    else:
-        return "load_data"
-
 
 set_mlflow_tracking_task = PythonOperator(
     task_id='set_mlflow_tracking',
@@ -198,10 +183,9 @@ set_mlflow_tracking_task = PythonOperator(
     dag=dag
 )
 
-create_table_task = PostgresOperator(
+create_table_task = PythonOperator(
     task_id='create_schema_and_table',
-    postgres_conn_id='postgres_default',
-    sql=create_schema_and_table_sql,
+    python_callable=create_schema_and_table,
     dag=dag
 )
 

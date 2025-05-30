@@ -32,27 +32,25 @@ dag = DAG(
 def set_mlflow_tracking(**kwargs):
     """Configurar tracking de MLflow"""
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    
-    
     os.environ['MLFLOW_TRACKING_URI'] = MLFLOW_TRACKING_URI
     os.environ['MLFLOW_S3_ENDPOINT_URL'] = MLFLOW_S3_ENDPOINT_URL
     os.environ['AWS_ACCESS_KEY_ID'] = AWS_ACCESS_KEY_ID
     os.environ['AWS_SECRET_ACCESS_KEY'] = AWS_SECRET_ACCESS_KEY
-
     print("✅ Tracking de MLflow configurado exitosamente")
 
-drop_schemas_sql = """
-DROP SCHEMA IF EXISTS rawdata CASCADE;  
-DROP SCHEMA IF EXISTS cleandata CASCADE;
-"""
-
 def check_schemas(**kwargs):
-    hook = PostgresHook(postgres_conn_id='postgres_default')
-    engine = hook.get_sqlalchemy_engine()
-    with engine.connect() as conn:
-        result = conn.execute("SELECT schema_name FROM information_schema.schemata;")
-        schemas = [row[0] for row in result]
-        print("Schemas disponibles:", schemas)
+    pg_hook = PostgresHook(postgres_conn_id='postgres_default')
+    result = pg_hook.get_records("SELECT schema_name FROM information_schema.schemata;")
+    schemas = [row[0] for row in result]
+    print("Schemas disponibles:", schemas)
+
+def drop_schemas(**kwargs):
+    pg_hook = PostgresHook(postgres_conn_id='postgres_default')
+    pg_hook.run("""
+        DROP SCHEMA IF EXISTS rawdata CASCADE;  
+        DROP SCHEMA IF EXISTS cleandata CASCADE;
+    """)
+    print("✅ Schemas rawdata y cleandata eliminados")
 
 def log_cleanup_mlflow(**kwargs):
     """Log de limpieza en MLflow"""
@@ -79,10 +77,9 @@ check_schemas_task = PythonOperator(
     dag=dag
 )
 
-drop_schemas_task = PostgresOperator(
+drop_schemas_task = PythonOperator(
     task_id='drop_schemas',
-    postgres_conn_id='postgres_default',
-    sql=drop_schemas_sql,
+    python_callable=drop_schemas,
     dag=dag
 )
 
